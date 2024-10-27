@@ -21,12 +21,30 @@
 #import <ObjFW/ObjFW.h>
 #import <ObjFWHID/ObjFWHID.h>
 
-static OFMutableArray *openControllers = nil;
+static enum {
+	unknownGame,
+	UT99,
+	UT2004
+} game;
+static OFMutableArray *openedControllers = nil;
 
 static void
-initOpenControllers(void)
+init(void)
 {
-	openControllers = [[OFMutableArray alloc] init];
+	@autoreleasepool {
+		OFPlugin *plugin = [OFPlugin pluginWithPath: nil];
+
+		if ([plugin addressForSymbol: @"LocalPackageNameSDLDrv"] != nil)
+			game = UT99;
+		else if ([plugin addressForSymbol: @"GSDLDrvPackage"] != nil)
+			game = UT2004;
+		else {
+			OFLog(@"Warning: Injected into unknown game!");
+			game = unknownGame;
+		}
+	}
+
+	openedControllers = [[OFMutableArray alloc] init];
 }
 
 int
@@ -52,7 +70,7 @@ SDL_JoystickOpen(int index)
 {
 	static OFOnceControl onceControl = OFOnceControlInitValue;
 
-	OFOnce(&onceControl, initOpenControllers);
+	OFOnce(&onceControl, init);
 
 	@autoreleasepool {
 		OHGameController *controller =
@@ -61,8 +79,8 @@ SDL_JoystickOpen(int index)
 		if (controller.extendedGamepad == nil)
 			return nil;
 
-		@synchronized (openControllers) {
-			[openControllers addObject: controller];
+		@synchronized (openedControllers) {
+			[openedControllers addObject: controller];
 		}
 
 		return controller;
@@ -72,21 +90,35 @@ SDL_JoystickOpen(int index)
 int
 SDL_JoystickNumAxes(OHGameController *controller)
 {
-	/* UT2004 seems to use 0 and 1 for movement and 5 and 6 for looking. */
-	return 7;
+	switch (game) {
+	case UT99:
+		/*
+		 * UT99 seems to use 0 and 1 for movement and 4 and 5 for
+		 * looking.
+		 */
+		return 6;
+	case UT2004:
+		/*
+		 * UT2004 seems to use 0 and 1 for movement and 5 and 6 for
+		 * looking.
+		 */
+		return 7;
+	default:
+		return 4;
+	}
 }
 
 int
 SDL_JoystickNumBalls(OHGameController *controller)
 {
-	/* Queried by UT2004, but SDL_JoystickGetBall is never used. */
+	/* Queried by UT99 and UT2004, but SDL_JoystickGetBall is never used. */
 	return 0;
 }
 
 int
 SDL_JoystickNumHats(OHGameController *controller)
 {
-	/* Queried by UT2004, but SDL_JoystickGetHat is never used. */
+	/* Queried by UT99 and UT2004, but SDL_JoystickGetHat is never used. */
 	return 0;
 }
 
@@ -99,8 +131,8 @@ SDL_JoystickNumButtons(OHGameController *controller)
 void
 SDL_JoystickUpdate(void)
 {
-	@synchronized (openControllers) {
-		for (OHGameController *controller in openControllers)
+	@synchronized (openedControllers) {
+		for (OHGameController *controller in openedControllers)
 			[controller updateState];
 	}
 }
@@ -110,24 +142,57 @@ SDL_JoystickGetAxis(OHGameController *controller, int axis)
 {
 	id <OHExtendedGamepad> gamepad = controller.extendedGamepad;
 
-	switch (axis) {
-	case 0:
-		return gamepad.leftThumbstick.xAxis.value * 32767;
-	case 1:
-		return gamepad.leftThumbstick.yAxis.value * 32767;
-	case 2:
-	case 3:
-	case 4:
-		/* It's requested but its use unknown. */
-		return 0;
-	case 5:
-		return gamepad.rightThumbstick.xAxis.value * 32767;
-	case 6:
-		/* UT2004 wants this axis reversed as the only one?! */
-		return -(gamepad.rightThumbstick.yAxis.value * 32767);
+	switch (game) {
+	case UT99:
+		switch (axis) {
+		case 0:
+			return gamepad.leftThumbstick.xAxis.value * 32767;
+		case 1:
+			/* UT99 wants this axis reversed as the only one?! */
+			return gamepad.leftThumbstick.yAxis.value * -32767;
+		case 2:
+		case 3:
+			/* It's requested but its use unknown. */
+			return 0;
+		case 4:
+			return gamepad.rightThumbstick.xAxis.value * 32767;
+		case 5:
+			return gamepad.rightThumbstick.yAxis.value * 32767;
+		}
+		break;
+	case UT2004:
+		switch (axis) {
+		case 0:
+			return gamepad.leftThumbstick.xAxis.value * 32767;
+		case 1:
+			return gamepad.leftThumbstick.yAxis.value * 32767;
+		case 2:
+		case 3:
+		case 4:
+			/* It's requested but its use unknown. */
+			return 0;
+		case 5:
+			return gamepad.rightThumbstick.xAxis.value * 32767;
+		case 6:
+			/* UT2004 wants this axis reversed as the only one?! */
+			return gamepad.rightThumbstick.yAxis.value * -32767;
+		}
+		break;
+	default:
+		switch (axis) {
+		case 0:
+			return gamepad.leftThumbstick.xAxis.value * 32767;
+		case 1:
+			return gamepad.leftThumbstick.yAxis.value * 32767;
+		case 2:
+			return gamepad.rightThumbstick.xAxis.value * 32767;
+		case 3:
+			return gamepad.rightThumbstick.yAxis.value * 32767;
+		}
+		break;
 	}
 
-	OFLog(@"Invalid axis %d requested", axis);
+	OFLog(@"Warning: Invalid axis %d requested", axis);
 	return 0;
 }
 
@@ -171,14 +236,14 @@ SDL_JoystickGetButton(OHGameController *controller, int button)
 		return gamepad.optionsButton.pressed;
 	}
 
-	OFLog(@"Invalid button %d requested", button);
+	OFLog(@"Warning: Invalid button %d requested", button);
 	return 0;
 }
 
 void
 SDL_JoystickClose(OHGameController *controller)
 {
-	@synchronized (openControllers) {
-		[openControllers removeObjectIdenticalTo: controller];
+	@synchronized (openedControllers) {
+		[openedControllers removeObjectIdenticalTo: controller];
 	}
 }
